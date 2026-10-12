@@ -1,0 +1,18 @@
+# claves y entornos
+.env
+.streamlit/secrets.toml
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# datos: NUNCA se suben (contienen informacion personal de egresados)
+*.xlsx
+*.xls
+*.csv
+*.json
+*.pdf
+cvs_prueba/
+clasificacion_*
+biografias_*
+revision_*
