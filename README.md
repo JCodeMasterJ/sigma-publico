@@ -4,7 +4,7 @@ Plataforma en la nube para el seguimiento de egresados de **Ingeniería de Telec
 
 > Proyecto Integrador 2026-2 · Autor: Juan Esteban Páez Fonseca · Asesora: Elizabeth Gelves Gelves · Estado: en ejecución
 >
-> Demo en la nube: *(agregar aquí el enlace cuando la app sea pública)*
+> Demo en la nube: https://mp5ylwlxsbi89rviejrp2q.streamlit.app/
 
 ## El problema
 Del registro institucional de 615 egresados, el 44 % no tiene situación laboral conocida y ningún dato indica cuándo se actualizó. Los informes de acreditación dependen de datos desactualizados y difíciles de verificar.
