@@ -242,6 +242,137 @@ def _grafico_cohortes(pdf, cohortes):
     pdf.ln(1)
 
 
+def _pct_txt(parte, total) -> str:
+    return f"{100 * parte / total:.0f} %" if total else "-"
+
+
+def _grafico_barras(pdf, numero, titulo, datos, pie, color=GOLD, max_items=10):
+    """Barras horizontales (etiqueta, barra y cifra) dibujadas con rectángulos, igual que el gráfico de cohortes."""
+    items = [(str(k), int(v)) for k, v in list(datos.items())[:max_items]]
+    if not items:
+        return False
+    paso, alto = 6.2, 4.4
+    _asegurar_espacio(pdf, 16 + len(items) * paso + 10)
+    x0 = pdf.l_margin
+    ancho_util = pdf.w - pdf.l_margin - pdf.r_margin
+    ancho_etiqueta, ancho_valor = 52, 14
+    ancho_barra = ancho_util - ancho_etiqueta - ancho_valor
+    mayor = max(v for _, v in items) or 1
+
+    pdf.ln(3)
+    pdf.set_x(x0)
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.set_text_color(*NAVY)
+    pdf.cell(0, 6, _t(f"Figura {numero}. {titulo}"), new_x="LMARGIN", new_y="NEXT")
+
+    y = pdf.get_y() + 1
+    for etiqueta, v in items:
+        pdf.set_font("Helvetica", "", 8)
+        texto = _t(etiqueta)
+        while (
+            pdf.get_string_width(texto) > ancho_etiqueta - 2 and len(texto) > 4
+        ):  # etiqueta larga: se recorta
+            texto = texto[:-2].rstrip() + "."
+        pdf.set_xy(x0, y)
+        pdf.set_text_color(30, 30, 30)
+        pdf.cell(ancho_etiqueta, alto, texto)
+        w = max(ancho_barra * v / mayor, 0.8)
+        pdf.set_fill_color(*color)
+        pdf.rect(x0 + ancho_etiqueta, y, w, alto, "F")
+        pdf.set_xy(x0 + ancho_etiqueta + w + 1.5, y)
+        pdf.set_font("Helvetica", "B", 7.5)
+        pdf.set_text_color(*NAVY)
+        pdf.cell(ancho_valor, alto, str(v))
+        y += paso
+
+    pdf.set_y(y + 0.5)
+    pdf.set_x(x0)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(*GRIS)
+    pdf.multi_cell(0, 4.2, _t(pie), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    return True
+
+
+def _paneles(ind):
+    """Qué gráficos de barras se dibujan, con su título, su color y una nota de cobertura (lo que NO muestra)."""
+    paneles = []
+    total = (ind.get("totales") or {}).get("egresados", 0)
+    ubi = ind.get("ubicacion_top") or {}
+    if ubi.get("ciudades"):
+        n = ubi.get("egresados_con_ciudad", 0)
+        paneles.append(
+            (
+                "Ciudades de residencia (principales)",
+                ubi["ciudades"],
+                GOLD,
+                10,
+                f"Ciudad registrada en {n} de {total} egresados ({_pct_txt(n, total)}). Quienes no tienen ciudad registrada no aparecen en este gráfico.",
+            )
+        )
+    sec = ind.get("sectores_top") or {}
+    if sec.get("sectores"):
+        n, tot, inf = (
+            sec.get("experiencias_con_sector", 0),
+            sec.get("experiencias_totales", 0),
+            sec.get("experiencias_con_sector_inferido_ia", 0),
+        )
+        paneles.append(
+            (
+                "Sector de las experiencias laborales",
+                sec["sectores"],
+                AZUL_DESEMPLEADO,
+                5,
+                f"Sector clasificado en {n} de {tot} experiencias"
+                + (
+                    f"; {inf} inferidas por IA (no declaradas por el egresado)."
+                    if inf
+                    else "."
+                ),
+            )
+        )
+    areas = ind.get("areas_top") or {}
+    if areas.get("areas"):
+        n, inf = (
+            areas.get("experiencias_con_area", 0),
+            areas.get("experiencias_con_area_inferida_ia", 0),
+        )
+        tot = sec.get("experiencias_totales", 0)
+        paneles.append(
+            (
+                "Áreas de desempeño",
+                areas["areas"],
+                VERDE_ESTUDIOS,
+                5,
+                f"Área clasificada en {n} de {tot} experiencias"
+                + (
+                    f"; {inf} inferidas por IA (no declaradas por el egresado)."
+                    if inf
+                    else "."
+                ),
+            )
+        )
+    tec = ind.get("tecnologias_top") or {}
+    if tec.get("tecnologias"):
+        paneles.append(
+            (
+                "Tecnologías más mencionadas",
+                tec["tecnologias"],
+                NAVY,
+                10,
+                f"Basado en {tec.get('experiencias_con_tecnologias', 0)} experiencias con tecnologías escritas por la persona.",
+            )
+        )
+    return paneles
+
+
+MAX_HALLAZGOS, MAX_LIMITACIONES, MAX_RECOMENDACIONES = (
+    5,
+    4,
+    3,
+)  # informe breve (también si el reporte guardado es anterior al tope)
+
+
 def generar_pdf(reporte: dict) -> bytes:
     """`reporte` es la respuesta JSON de POST /agentes/generar-reporte."""
     ind = reporte["indicadores"]
@@ -349,7 +480,7 @@ def generar_pdf(reporte: dict) -> bytes:
     _parrafo(pdf, rep["resumen_ejecutivo"])
 
     _titulo(pdf, "Hallazgos")
-    for h in rep["hallazgos"]:
+    for h in rep["hallazgos"][:MAX_HALLAZGOS]:
         _vineta(
             pdf,
             h["afirmacion"],
@@ -359,9 +490,13 @@ def generar_pdf(reporte: dict) -> bytes:
     cohortes_fig = ind.get("empleabilidad_por_cohorte", {})
     if cohortes_fig:
         _grafico_cohortes(pdf, cohortes_fig)
+    numero_figura = 2 if cohortes_fig else 1
+    for titulo, datos, color, tope, pie in _paneles(ind):
+        if _grafico_barras(pdf, numero_figura, titulo, datos, pie, color, tope):
+            numero_figura += 1
 
     _titulo(pdf, "Limitaciones de los datos")
-    for x in rep["limitaciones_de_los_datos"]:
+    for x in rep["limitaciones_de_los_datos"][:MAX_LIMITACIONES]:
         _vineta(pdf, x)
 
     notas = reporte.get("notas_metodologicas") or []
@@ -371,7 +506,7 @@ def generar_pdf(reporte: dict) -> bytes:
             _vineta(pdf, x)
 
     _titulo(pdf, "Recomendaciones para revisión institucional")
-    for x in rep["recomendaciones"]:
+    for x in rep["recomendaciones"][:MAX_RECOMENDACIONES]:
         _vineta(pdf, x)
 
     # Anexo: los indicadores exactos que recibió la IA
@@ -522,29 +657,6 @@ def generar_pdf(reporte: dict) -> bytes:
         (110, 60),
         ("LEFT", "RIGHT"),
     )
-    if ubi["ciudades"]:
-        _parrafo(
-            pdf,
-            "Ciudades principales: "
-            + ", ".join(f"{c} ({n})" for c, n in ubi["ciudades"].items()),
-            tam=9,
-        )
-    if sec.get("sectores"):
-        etiqueta = " (inferidos por IA)" if sec_inf else ""
-        _parrafo(
-            pdf,
-            f"Sectores principales{etiqueta}: "
-            + ", ".join(f"{c} ({n})" for c, n in sec["sectores"].items()),
-            tam=9,
-        )
-    if areas.get("areas"):
-        etiqueta = " (inferidas por IA)" if area_inf else ""
-        _parrafo(
-            pdf,
-            f"Áreas de desempeño principales{etiqueta}: "
-            + ", ".join(f"{c} ({n})" for c, n in areas["areas"].items()),
-            tam=9,
-        )
     crit = ind.get("criterios_de_analisis")
     if crit:
         _parrafo(

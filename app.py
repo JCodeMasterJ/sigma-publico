@@ -270,8 +270,6 @@ def pestana_reporte():
         return
 
     st.divider()
-    st.markdown(reporte["narrativa_markdown"])
-
     ver = reporte["verificacion"]
     if (
         ver["citas_invalidas"]
@@ -302,6 +300,36 @@ def pestana_reporte():
         )
     if reporte.get("advertencia"):
         st.caption(reporte["advertencia"])
+
+    # Los gráficos primero: se entienden de un vistazo y reducen lo que hay que leer. Un fallo al dibujarlos nunca esconde el informe.
+    try:
+        from graficos_reporte import figuras_del_reporte
+
+        figuras = figuras_del_reporte(reporte["indicadores"])
+        if figuras:
+            st.markdown("### Panorama en gráficos")
+        pendientes = []
+        for f in figuras:
+            if f["ancho"] == "completo":
+                st.plotly_chart(f["figura"], use_container_width=True)
+                st.caption(f["pie"])
+            else:
+                pendientes.append(f)
+        for i in range(0, len(pendientes), 2):
+            for col, f in zip(st.columns(2), pendientes[i : i + 2]):
+                with col:
+                    st.plotly_chart(f["figura"], use_container_width=True)
+                    st.caption(f["pie"])
+    except Exception:  # noqa: BLE001
+        st.caption(
+            "No se pudieron dibujar los gráficos; el informe escrito y el PDF siguen disponibles."
+        )
+
+    with st.expander(
+        "Informe redactado: resumen, hallazgos, limitaciones y recomendaciones",
+        expanded=True,
+    ):
+        st.markdown(reporte["narrativa_markdown"])
 
     try:
         from informe_pdf import generar_pdf

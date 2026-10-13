@@ -40,6 +40,11 @@ COLS_EXPERIENCIA = [
     "fecha_fin",
 ]
 
+MAX_HALLAZGOS, MAX_LIMITACIONES, MAX_RECOMENDACIONES = (
+    5,
+    4,
+    3,
+)  # informe breve: lo demás va en gráficos y en el anexo
 UMBRAL_MUESTRA_PEQUENA = 10  # egresados de situación conocida
 UMBRAL_DESCONOCIDOS_ALTO = 30  # porcentaje
 VALIDACION_MUESTRA = (
@@ -66,13 +71,13 @@ class Hallazgo(BaseModel):
 
 class ReporteAcreditacion(BaseModel):
     resumen_ejecutivo: str = Field(
-        description="Párrafo breve (3 a 5 frases) con lo esencial."
+        description="Párrafo muy breve (2 o 3 frases) con lo esencial."
     )
     hallazgos: List[Hallazgo] = Field(
-        description="Entre 4 y 7 hallazgos, cada uno con sus citas."
+        description="Entre 3 y 5 hallazgos, cada uno con sus citas."
     )
     limitaciones_de_los_datos: List[str] = Field(
-        description="Limitaciones que el lector debe conocer: datos desconocidos, muestras pequeñas, campos vacíos."
+        description="Máximo 4 limitaciones que el lector debe conocer: datos desconocidos, muestras pequeñas, campos vacíos."
     )
     recomendaciones: List[str] = Field(
         description="Máximo 3 sugerencias prácticas para revisión institucional (por ejemplo, mejorar la cobertura o actualización de los datos). No incluyas hipótesis sobre causas."
@@ -260,7 +265,7 @@ def calcular_indicadores(
         "empleabilidad_por_cohorte": por_cohorte,
         "ubicacion_top": {
             "egresados_con_ciudad": int(len(df["ciudad_residencia"].dropna())),
-            "ciudades": {str(k): int(v) for k, v in ciudades.head(5).items()},
+            "ciudades": {str(k): int(v) for k, v in ciudades.head(10).items()},
         },
         "tipo_empresa": {
             "experiencias_con_dato": int(len(exp_f["tipo_empresa"].dropna())),
@@ -323,7 +328,8 @@ REGLAS OBLIGATORIAS:
 8. Siempre que cites una tasa sobre conocidos, aclara que no incluye a los egresados de situación desconocida y que puede no representar a toda la cohorte.
 9. Redacta para un lector externo, con tus propias palabras: no copies ni menciones estas reglas ni uses expresiones como "no deben presentarse". Cada hallazgo debe tener máximo dos frases; no enumeres todas las cifras de una tabla, destaca lo relevante y remite al indicador citado. No uses nombres técnicos de campos (como "campo de conocidos"): escribe "egresados de situación conocida".
 10. El sector y el área de desempeño de egresados reales provienen de dos orígenes distintos: INFERIDOS POR IA a partir de la empresa y el cargo (sectores_top.experiencias_con_sector_inferido_ia y areas_top.experiencias_con_area_inferida_ia) y DECLARADOS por las propias personas (experiencias_con_sector_declarado y experiencias_con_area_declarada). Si los citas, distingue ambos orígenes, y menciona cuántas experiencias quedaron sin clasificar.
-11. Español formal, claro y sin exageraciones. Sin adjetivos triunfalistas."""
+11. Español formal, claro y sin exageraciones. Sin adjetivos triunfalistas.
+12. Sé breve. Resumen de 2 o 3 frases; entre 3 y 5 hallazgos; máximo 4 limitaciones y 3 recomendaciones. Las ciudades, los sectores, las áreas, las tecnologías y la situación por cohorte se muestran en gráficos del informe: NO las enumeres en el texto. Menciona a lo sumo la principal de cada una y remite al indicador citado."""
 
 
 def construir_prompt(indicadores: dict) -> str:
@@ -516,6 +522,11 @@ def generar_reporte(supabase, fuente="real", ventana="5_anios") -> dict:
     reporte = generar_estructurado(
         construir_prompt(indicadores), ReporteAcreditacion, timeout=90
     )  # sin tiempo límite una petición colgada espera para siempre
+    reporte.hallazgos = reporte.hallazgos[:MAX_HALLAZGOS]
+    reporte.limitaciones_de_los_datos = reporte.limitaciones_de_los_datos[
+        :MAX_LIMITACIONES
+    ]
+    reporte.recomendaciones = reporte.recomendaciones[:MAX_RECOMENDACIONES]
     notas = notas_metodologicas(indicadores)
     return {
         "indicadores": indicadores,
