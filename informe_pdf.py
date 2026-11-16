@@ -54,15 +54,20 @@ def _num(valor, decimales=1) -> str:
 
 
 class _Informe(FPDF):
+    es_ejemplo = False
+
     def footer(self):
         self.set_y(-14)
         self.set_font("Helvetica", "I", 7.5)
         self.set_text_color(*GRIS)
+        # el pie dice la verdad sobre quién escribió el texto: en el informe de ejemplo (demo) lo armó una plantilla, no la IA
         self.cell(
             140,
             8,
             _t(
-                "SIGMA · Redactado con apoyo de IA a partir de indicadores calculados por el sistema (ver anexo)."
+                "SIGMA · INFORME DE EJEMPLO con datos ficticios; el texto lo arma una plantilla, no la IA."
+                if self.es_ejemplo
+                else "SIGMA · Redactado con apoyo de IA a partir de indicadores calculados por el sistema (ver anexo)."
             ),
         )
         self.cell(0, 8, _t(f"Página {self.page_no()}/{{nb}}"), align="R")
@@ -381,6 +386,7 @@ def generar_pdf(reporte: dict) -> bytes:
     alc = ind["alcance"]
 
     pdf = _Informe(format="A4")
+    pdf.es_ejemplo = bool(reporte.get("es_ejemplo"))
     pdf.set_margins(20, 18, 20)
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.alias_nb_pages()
@@ -397,7 +403,10 @@ def generar_pdf(reporte: dict) -> bytes:
     pdf.cell(
         0,
         8,
-        _t("SIGMA - Informe de seguimiento a egresados"),
+        _t(
+            "SIGMA - Informe de seguimiento a egresados"
+            + (" (EJEMPLO)" if pdf.es_ejemplo else "")
+        ),
         new_x="LMARGIN",
         new_y="NEXT",
     )

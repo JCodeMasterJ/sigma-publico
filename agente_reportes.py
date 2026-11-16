@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import List
 
 import pandas as pd
+
+from lectura_datos import leer_todo
 from pydantic import BaseModel, Field
 
 from proveedor_ia import generar_estructurado
@@ -88,20 +90,8 @@ class ReporteAcreditacion(BaseModel):
 # 1) Cálculo de indicadores (código, no IA)
 # ---------------------------------------------------------------------------
 def _fetch_all(supabase, tabla, columnas, page=1000):
-    """Trae todas las filas (PostgREST limita a 1000 por petición)."""
-    filas, inicio = [], 0
-    while True:
-        r = (
-            supabase.table(tabla)
-            .select(columnas)
-            .range(inicio, inicio + page - 1)
-            .execute()
-        )
-        filas.extend(r.data)
-        if len(r.data) < page:
-            break
-        inicio += page
-    return filas
+    """Trae todas las filas (PostgREST limita a 1000 por petición): ver lectura_datos.leer_todo."""
+    return leer_todo(supabase, tabla, columnas, pagina=page)
 
 
 def _pct(parte, total):
@@ -496,7 +486,11 @@ def a_markdown(
 # ---------------------------------------------------------------------------
 # Orquestador
 # ---------------------------------------------------------------------------
-def generar_reporte(supabase, fuente="real", ventana="5_anios") -> dict:
+def indicadores_desde_base(supabase, fuente="real", ventana="5_anios") -> dict:
+    """
+    Lee los datos COMPLETOS (por páginas) y calcula los indicadores, sin usar IA. Devuelve cifras agrupadas, sin datos de personas.
+    Lo usan el generador de reportes y el punto de acceso de lectura para otras aplicaciones.
+    """
     egr = pd.DataFrame(
         _fetch_all(supabase, "egresados", ",".join(COLS_EGRESADOS)),
         columns=COLS_EGRESADOS,
@@ -505,7 +499,6 @@ def generar_reporte(supabase, fuente="real", ventana="5_anios") -> dict:
         _fetch_all(supabase, "experiencia_laboral", ",".join(COLS_EXPERIENCIA)),
         columns=COLS_EXPERIENCIA,
     )
-
     indicadores = calcular_indicadores(egr, exp, fuente, ventana)
     # normalizar tipos numpy a tipos nativos de Python (para guardar como JSON)
     indicadores = json.loads(
@@ -513,11 +506,15 @@ def generar_reporte(supabase, fuente="real", ventana="5_anios") -> dict:
             indicadores, default=lambda o: o.item() if hasattr(o, "item") else str(o)
         )
     )
-
     if indicadores["totales"]["egresados"] == 0:
         raise SinDatosError(
             "No hay egresados que cumplan ese filtro; no se puede generar un reporte."
         )
+    return indicadores
+
+
+def generar_reporte(supabase, fuente="real", ventana="5_anios") -> dict:
+    indicadores = indicadores_desde_base(supabase, fuente, ventana)
 
     reporte = generar_estructurado(
         construir_prompt(indicadores), ReporteAcreditacion, timeout=90

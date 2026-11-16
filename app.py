@@ -1,8 +1,10 @@
+import base64
 import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -11,7 +13,12 @@ import streamlit as st
 from supabase import create_client
 from dotenv import load_dotenv
 
+from aviso_privacidad import TEXTO_AUTORIZACION, aviso_markdown
+from cohorte import cifras_de_cohorte
 from cv_texto import CVError, preparar_texto_cv
+from datos_demo import generar_datos_demo, informe_de_ejemplo
+from exportar import indicadores_a_csv, mis_datos_json
+from lectura_datos import leer_todo
 from privacidad import resumen_informe
 from taxonomia import AREAS, SECTORES
 
@@ -20,30 +27,134 @@ HORA_COLOMBIA = timezone(timedelta(hours=-5))
 
 load_dotenv()
 
-st.set_page_config(
-    page_title="SIGMA · Egresados Telecomunicaciones", page_icon="📡", layout="wide"
-)
+st.set_page_config(page_title="SIGMA · Egresados Telecomunicaciones", layout="wide")
 
 NAVY = "#0B2A5E"
 GOLD = "#C9A227"
 PALETA = [GOLD, NAVY, "#5B7FB9", "#E3C567", "#2F4C7E", "#8C9BB5"]
 
-st.markdown(
-    f"""
-<style>
-.metric-card {{
-    background: linear-gradient(135deg, {NAVY} 0%, #123a7a 100%);
-    border-radius: 14px;
-    padding: 1.1rem 1.3rem;
-    color: white;
-}}
-.metric-card .valor {{ font-size: 2.1rem; font-weight: 700; color: {GOLD}; }}
-.metric-card .etiqueta {{ font-size: 0.85rem; opacity: 0.85; }}
-div[data-testid="stTabs"] button[aria-selected="true"] {{ color: {GOLD} !important; border-color: {GOLD} !important; }}
-</style>
-""",
-    unsafe_allow_html=True,
-)
+ESTILO = """
+:root {
+  --navy: __NAVY__; --gold: __GOLD__; --navy-2: #123A7A; --ink: #14223F; --muted: #556587;
+  --pagina: #F4EEDD; --tarjeta: #FFFDF7; --line: #DCD1B2; --gold-soft: #F7EDC8; --blue-soft: #E4ECF8;
+  --serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --sans: "Public Sans", "Source Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* fondo marfil: la página es marfil y lo que contiene (cifras, formularios, campos) es una tarjeta casi blanca */
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stHeader"] { background: var(--pagina) !important; }
+[data-testid="stMetric"], [data-testid="stForm"], [data-testid="stExpander"] { background: var(--tarjeta) !important; }
+[data-testid="stForm"], [data-testid="stExpander"] { border-color: var(--line) !important; }   /* las cifras conservan su borde dorado de arriba */
+[data-baseweb="input"], [data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="base-input"] { background-color: var(--tarjeta) !important; }
+
+/* tipografía: títulos y cifras en Fraunces; el resto en Public Sans (ambas van dentro de la aplicación, sin pedir nada a internet) */
+.stApp, .stApp p, .stApp label, .stApp li, .stApp input, .stApp button, .stApp textarea, .stApp [data-testid="stTab"] p,
+.stApp [data-testid="stCaptionContainer"], .stApp [data-testid="stMetricLabel"] p, .stApp .sigma-eyebrow, .stApp .metric-card .etiqueta { font-family: var(--sans) !important; }
+.sigma-marca, .sigma-lema, [data-testid="stMetricValue"], [data-testid="stMetricValue"] > div, .metric-card .valor,
+[data-testid="stHeading"] h1, [data-testid="stHeading"] h2, [data-testid="stHeading"] h3, [data-testid="stHeading"] h4,
+[data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2, [data-testid="stMarkdownContainer"] h3, [data-testid="stMarkdownContainer"] h4,
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-family: var(--serif) !important; }
+/* la barra superior de Streamlit (con Compartir, favorito y editar, cuando eres el dueño) mide unos 60 px y va ENCIMA del contenido: se deja espacio de sobra */
+[data-testid="stMainBlockContainer"] { padding-top: 5rem; max-width: 1180px; }
+
+/* cabecera: el nombre en grande; lo demás, en letra pequeña con espaciado */
+.sigma-cabecera { margin: 0 0 1.8rem 0; padding-bottom: 1.1rem; border-bottom: 1px solid var(--line); position: relative; }
+.sigma-cabecera::after { content: ""; position: absolute; left: 0; bottom: -2px; width: 64px; height: 3px; background: var(--gold); }
+.sigma-eyebrow { font-size: .7rem; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.sigma-marca { font-family: var(--serif); font-size: 3.4rem; line-height: 1.05; font-weight: 700; color: var(--navy); letter-spacing: .04em; margin: .25rem 0 .15rem 0; }
+.sigma-lema { font-family: var(--serif); font-size: 1.15rem; color: var(--muted); font-style: italic; }
+
+/* pestañas */
+[data-testid="stTabs"] [role="tablist"] { gap: 1.15rem; }
+[data-testid="stTab"] { padding: .7rem 0 !important; }
+[data-testid="stTab"] p { font-weight: 600; letter-spacing: .01em; font-size: .95rem; color: var(--muted); }
+[data-testid="stTab"][aria-selected="true"] p { color: var(--navy); }
+
+/* cifras: las nativas de Streamlit y las tarjetas del panel */
+[data-testid="stMetric"] { background: var(--tarjeta); border: 1px solid var(--line); border-top: 3px solid var(--gold); border-radius: 4px; padding: .9rem 1rem; }
+[data-testid="stMetricLabel"] { min-height: 2.6em; }
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p { overflow: visible !important; text-overflow: clip !important; white-space: normal !important; }
+[data-testid="stMetricLabel"] p { font-size: .66rem !important; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; line-height: 1.35; }
+[data-testid="stMetricValue"], [data-testid="stMetricValue"] > div { font-family: var(--serif); font-weight: 600; color: var(--navy); font-size: 1.85rem; overflow: visible !important; text-overflow: clip !important; white-space: normal !important; }
+.metric-card { background: var(--navy); border-top: 3px solid var(--gold); border-radius: 4px; padding: 1.1rem 1.3rem; color: #fff; }
+.metric-card .etiqueta { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; opacity: .82; font-weight: 600; }
+.metric-card .valor { font-family: var(--serif); font-size: 2.3rem; font-weight: 600; color: var(--gold); line-height: 1.15; margin-top: .3rem; }
+
+/* avisos: misma familia de color, y el tipo de aviso lo marca el borde izquierdo */
+[data-testid="stAlertContainer"] { border-radius: 4px; border: 1px solid var(--line); border-left-width: 4px; background: var(--tarjeta); color: var(--ink); }
+[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) [data-testid="stAlertContainer"] { background: var(--blue-soft); border-left-color: var(--navy); }
+[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) [data-testid="stAlertContainer"] { background: var(--gold-soft); border-left-color: var(--gold); }
+[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]) [data-testid="stAlertContainer"] { background: #E3F1EC; border-left-color: #2F7D6B; }
+[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) [data-testid="stAlertContainer"] { background: #FBE7E3; border-left-color: #B3392B; }
+
+/* botones, desplegables y formularios */
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] { font-weight: 600; letter-spacing: .02em; transition: transform .15s ease, box-shadow .15s ease, background-color .15s ease, border-color .15s ease; }
+[data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-secondary"]:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(11,42,94,.16); }
+[data-testid="stBaseButton-primary"]:hover { background-color: var(--navy-2); border-color: var(--navy-2); }
+[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: 4px; }
+[data-testid="stExpander"] summary p { font-weight: 600; }
+[data-testid="stForm"] { border: 1px solid var(--line); border-radius: 4px; }
+
+/* barra lateral */
+[data-testid="stSidebar"] { border-right: 3px solid var(--gold); }
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] { background: transparent; border-color: #5B7FB9; color: #F1F4FA; }
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover { border-color: var(--gold); color: var(--gold); }
+
+/* movimiento: el nombre se asienta al cargar y las cifras aparecen en cascada. Sin movimiento si la persona lo prefiere así */
+@keyframes sigma-aparecer { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes sigma-asentar { from { opacity: 0; letter-spacing: .34em; } to { opacity: 1; letter-spacing: .04em; } }
+.sigma-marca { animation: sigma-asentar 1.1s cubic-bezier(.2,.7,.2,1) both; }
+[data-testid="stMetric"], .metric-card, [data-testid="stAlert"] { animation: sigma-aparecer .6s cubic-bezier(.2,.7,.2,1) both; }
+[data-testid="stColumn"]:nth-child(2) [data-testid="stMetric"], [data-testid="stColumn"]:nth-child(2) .metric-card { animation-delay: .08s; }
+[data-testid="stColumn"]:nth-child(3) [data-testid="stMetric"], [data-testid="stColumn"]:nth-child(3) .metric-card { animation-delay: .16s; }
+[data-testid="stColumn"]:nth-child(4) [data-testid="stMetric"], [data-testid="stColumn"]:nth-child(4) .metric-card { animation-delay: .24s; }
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] { padding-top: 5rem; }
+  .sigma-marca { font-size: 2.7rem; }
+  [data-testid="stTabs"] [role="tablist"] { gap: .8rem; }   /* que las dos pestañas de la demostración quepan sin cortarse */
+  [data-testid="stTab"] p { font-size: .86rem; letter-spacing: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sigma-marca, [data-testid="stMetric"], .metric-card, [data-testid="stAlert"] { animation: none !important; }
+  [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] { transition: none !important; transform: none !important; }
+}
+""".replace("__NAVY__", NAVY).replace("__GOLD__", GOLD)
+
+CABECERA = """
+<div class="sigma-cabecera">
+  <div class="sigma-eyebrow">Facultad de Ingeniería de Telecomunicaciones · Universidad Santo Tomás</div>
+  <div class="sigma-marca" role="heading" aria-level="1">SIGMA</div>
+  <div class="sigma-lema">Observatorio de trayectoria y empleabilidad de egresados</div>
+</div>
+"""
+
+# (archivo, familia, estilo, pesos): tipografías libres (licencia SIL OFL) que viajan DENTRO del proyecto, en la carpeta fuentes/
+FUENTES = [
+    ("Fraunces-normal-600.woff2", "Fraunces", "normal", "100 900"),
+    ("Fraunces-italic-400.woff2", "Fraunces", "italic", "400"),
+    ("PublicSans-normal-400.woff2", "Public Sans", "normal", "100 900"),
+]
+
+
+@st.cache_resource(show_spinner=False)
+def css_fuentes():
+    """
+    Las tipografías van incrustadas en el propio estilo: así se ven igual sin internet (por ejemplo, en un stand). Si falta algún archivo, no pasa
+    nada grave: el navegador usa la tipografía de respaldo (Georgia o la del sistema) y la aplicación sigue funcionando.
+    """
+    reglas = []
+    for archivo, familia, estilo, pesos in FUENTES:
+        ruta = Path(__file__).parent / "fuentes" / archivo
+        if ruta.exists():
+            datos = base64.b64encode(ruta.read_bytes()).decode()
+            reglas.append(
+                f"@font-face {{ font-family: '{familia}'; font-style: {estilo}; font-weight: {pesos}; font-display: swap; "
+                f"src: url(data:font/woff2;base64,{datos}) format('woff2'); }}"
+            )
+    return "\n".join(reglas)
+
+
+st.markdown(f"<style>{css_fuentes()}\n{ESTILO}</style>", unsafe_allow_html=True)
 
 
 def nuevo_cliente():
@@ -66,7 +177,7 @@ def cargar_datos(user_id, _cliente):
     """`user_id` forma parte de la clave de caché: los datos de una cuenta nunca se reutilizan para otra."""
     client = _cliente
     egresados = _con_columnas(
-        client.table("egresados").select("*").execute().data,
+        leer_todo(client, "egresados"),
         [
             "id",
             "nombre",
@@ -83,7 +194,7 @@ def cargar_datos(user_id, _cliente):
         ],
     )
     experiencia = _con_columnas(
-        client.table("experiencia_laboral").select("*").execute().data,
+        leer_todo(client, "experiencia_laboral"),
         [
             "egresado_id",
             "empresa",
@@ -164,12 +275,12 @@ def nota_clasificacion(clasificadas, inferidas, sin_clasificar, declaradas, plur
     partes = []
     if inferidas:
         partes.append(
-            f"🏷️ {inferidas} de {clasificadas} {plural} fueron **inferidos por IA** a partir de la empresa y el cargo; "
+            f"{inferidas} de {clasificadas} {plural} fueron **inferidos por IA** a partir de la empresa y el cargo; "
             "no son datos declarados por los egresados."
         )
     if declaradas:
         partes.append(
-            f"✍️ {declaradas} fueron **declarados por los propios egresados** desde el portal."
+            f"{declaradas} fueron **declarados por los propios egresados** desde el portal."
         )
     resto = clasificadas - inferidas - declaradas
     if resto > 0:
@@ -255,9 +366,14 @@ def pestana_reporte():
                     st.error(
                         "El dashboard no tiene la clave correcta para el servicio de IA (AGENTES_API_KEY)."
                     )
+                elif resp.status_code in (502, 503, 504):
+                    # el proveedor del servicio responde con una página web cuando está despertando o desplegando: no se muestra cruda
+                    st.warning(
+                        "El servicio de IA está despertando o está ocupado. Espera un minuto y vuelve a pulsar «Generar reporte»."
+                    )
                 else:
                     st.error(
-                        f"El servicio de IA respondió con un error ({resp.status_code}): {resp.text[:300]}"
+                        f"El servicio de IA respondió con un error ({resp.status_code}). Inténtalo de nuevo; si persiste, avisa a quien administra el sistema."
                     )
             except requests.exceptions.RequestException:
                 st.error(
@@ -269,6 +385,11 @@ def pestana_reporte():
         st.info("Elige los datos y el periodo, y pulsa «Generar reporte».")
         return
 
+    mostrar_reporte(reporte)
+
+
+def mostrar_reporte(reporte):
+    """Presenta un reporte ya generado (real o de ejemplo): verificación, resumen, cifras clave y descargas."""
     st.divider()
     ver = reporte["verificacion"]
     if (
@@ -301,44 +422,42 @@ def pestana_reporte():
     if reporte.get("advertencia"):
         st.caption(reporte["advertencia"])
 
-    # Los gráficos primero: se entienden de un vistazo y reducen lo que hay que leer. Un fallo al dibujarlos nunca esconde el informe.
-    try:
-        from graficos_reporte import figuras_del_reporte
-
-        figuras = figuras_del_reporte(reporte["indicadores"])
-        if figuras:
-            st.markdown("### Panorama en gráficos")
-        pendientes = []
-        for f in figuras:
-            if f["ancho"] == "completo":
-                st.plotly_chart(f["figura"], use_container_width=True)
-                st.caption(f["pie"])
-            else:
-                pendientes.append(f)
-        for i in range(0, len(pendientes), 2):
-            for col, f in zip(st.columns(2), pendientes[i : i + 2]):
-                with col:
-                    st.plotly_chart(f["figura"], use_container_width=True)
-                    st.caption(f["pie"])
-    except Exception:  # noqa: BLE001
-        st.caption(
-            "No se pudieron dibujar los gráficos; el informe escrito y el PDF siguen disponibles."
-        )
-
-    with st.expander(
-        "Informe redactado: resumen, hallazgos, limitaciones y recomendaciones",
-        expanded=True,
-    ):
-        st.markdown(reporte["narrativa_markdown"])
+    # La página da el RESUMEN y las cifras clave; el informe completo (gráficos, hallazgos, limitaciones y recomendaciones) está en el PDF.
+    ind, rep = reporte["indicadores"], reporte["reporte"]
+    eg = ind["empleabilidad_general"]
+    st.markdown("### Resumen")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(
+        "Egresados analizados", f"{ind['totales']['egresados']:,}".replace(",", ".")
+    )
+    m2.metric(
+        "Empleo sobre el total", f"{eg['tasa_sobre_total']:.1f} %".replace(".", ",")
+    )
+    m3.metric(
+        "Empleo sobre conocidos",
+        f"{eg['tasa_sobre_conocidos']:.1f} %".replace(".", ","),
+        help="No incluye a los egresados de situación desconocida: puede no representar a toda la población.",
+    )
+    m4.metric(
+        "Situación desconocida",
+        f"{eg['porcentaje_situacion_desconocida']:.1f} %".replace(".", ","),
+        help="Egresados sin situación laboral conocida: no equivale a desempleo.",
+    )
+    st.markdown(rep["resumen_ejecutivo"])
+    st.info(
+        "El **informe completo** (gráficos de situación laboral por cohorte, ciudades, sectores, áreas y tecnologías, "
+        "además de los hallazgos, las limitaciones y las recomendaciones) está en el **PDF**."
+    )
 
     try:
         from informe_pdf import generar_pdf
 
         st.download_button(
-            "⬇️ Descargar informe en PDF",
+            "Descargar informe en PDF",
             data=generar_pdf(reporte),
-            file_name=f"informe_sigma_{datetime.now():%Y%m%d}.pdf",
+            file_name=f"informe_sigma{'_ejemplo' if reporte.get('es_ejemplo') else ''}_{datetime.now():%Y%m%d}.pdf",
             mime="application/pdf",
+            type="primary",
         )
     except ImportError:
         st.caption(
@@ -349,28 +468,221 @@ def pestana_reporte():
     ) as e:  # un fallo del PDF nunca debe tumbar la visualización del reporte
         st.caption(f"No se pudo generar el PDF: {e}")
 
+    try:
+        st.download_button(
+            "Descargar indicadores (CSV)",
+            data=indicadores_a_csv(ind),
+            file_name=f"indicadores_sigma{'_ejemplo' if reporte.get('es_ejemplo') else ''}_{datetime.now():%Y%m%d}.csv",
+            mime="text/csv",
+            help="Cifras agrupadas, sin datos de personas, para llevar a Excel, Power BI u otra aplicación.",
+        )
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"No se pudo preparar el CSV: {e}")
+
+    with st.expander(
+        "Ver el texto completo del informe (también está en el PDF)", expanded=False
+    ):
+        st.markdown(reporte["narrativa_markdown"])
+
     with st.expander("Ver los indicadores exactos que recibió la IA"):
         st.json(reporte["indicadores"])
 
 
-def vista_admin(auth):
-    egresados, experiencia, cargado_en = cargar_datos(auth["user_id"], auth["cliente"])
+def mostrar_cohorte(c: dict):
+    """Cifras agrupadas de una promoción: las mismas en la demostración y en el portal real."""
+    if not c or not c.get("suficiente"):
+        c = c or {}
+        st.info(
+            f"Todavía no hay suficientes egresados registrados en tu promoción ({c.get('cohorte', '')}: {c.get('n', 0)}; el mínimo es {c.get('minimo', 10)}) "
+            "para mostrar cifras sin identificar a nadie. Cuando se sumen más, las verás aquí."
+        )
+        return
+    n = c["n"]
+    coma = lambda v: f"{v:.1f} %".replace(".", ",")
+    st.markdown(f"#### Tu promoción {c['cohorte']}: {n} egresados")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Empleo sobre el total", coma(c["tasa_sobre_total"]))
+    m2.metric(
+        "Empleo sobre conocidos",
+        "n/d" if c["tasa_sobre_conocidos"] is None else coma(c["tasa_sobre_conocidos"]),
+        help="No incluye a quienes tienen situación desconocida: puede no representar a toda la promoción.",
+    )
+    m3.metric(
+        "Situación desconocida",
+        coma(c["porcentaje_desconocido"]),
+        help="Egresados sin situación laboral conocida: no equivale a desempleo.",
+    )
+    m4.metric("Con ciudad registrada", f"{c['con_ciudad']} de {n}")
+    for col, clave, titulo in zip(
+        st.columns(3),
+        ("ciudades", "sectores", "tecnologias"),
+        ("Ciudades", "Sectores", "Tecnologías"),
+    ):
+        datos = c.get(clave) or {}
+        with col:
+            st.markdown(f"**{titulo}**")
+            if datos:
+                df = pd.DataFrame(
+                    {"categoria": list(datos), "egresados": list(datos.values())}
+                ).sort_values("egresados")
+                fig = px.bar(
+                    df,
+                    x="egresados",
+                    y="categoria",
+                    orientation="h",
+                    labels={"egresados": "Egresados", "categoria": ""},
+                )
+                fig.update_layout(height=230, margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.caption("Ninguna con suficientes personas.")
+    st.caption(
+        f"Cifras agrupadas de {n} egresados. Solo se muestran categorías con al menos {c.get('celda_minima', 3)} personas, para no identificar a nadie. "
+        f"El {coma(c['porcentaje_desconocido'])} de tu promoción no tiene situación conocida: mientras más participen, más precisa será esta foto."
+    )
+
+
+def seccion_cohorte(auth, declarada):
+    """
+    Lo que recibe el egresado a cambio de su respuesta: cómo está su promoción (cifras agrupadas que entrega la base de datos).
+    Solo se ofrece a quien ya guardó su propia información: primero compartes tu parte, después ves la de todos.
+    """
+    st.divider()
+    st.markdown("### Tu cohorte en cifras")
+    if not declarada:
+        st.info(
+            "Guarda tu información en el formulario de arriba y aquí verás cómo está tu promoción. "
+            "Primero compartes tu parte; después ves la de todos."
+        )
+        return
+    pedida = st.session_state.pop("mostrar_cohorte", False)
+    if st.button("Ver las cifras de mi promoción", key="ver_cohorte") or pedida:
+        try:
+            st.session_state["cohorte_cifras"] = llamar_funcion(
+                auth, "mi_cohorte_en_cifras"
+            )
+        except Exception as e:  # noqa: BLE001
+            st.error(mensaje_error_sigma(e))
+    c = st.session_state.get("cohorte_cifras")
+    if c:
+        mostrar_cohorte(c)
+    else:
+        st.caption(
+            "Cuando quieras, mira cómo está tu promoción: cifras agrupadas, sin identificar a nadie."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Modo demostración (stands y visitas): datos ficticios en memoria, sin sesión y sin base de datos
+# ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def datos_demo_cache():
+    return generar_datos_demo()
+
+
+@st.cache_data(show_spinner=False)
+def informe_demo_cache():
+    egresados, experiencia = generar_datos_demo()
+    return informe_de_ejemplo(egresados, experiencia)
+
+
+def pestana_reporte_demo():
+    st.subheader("Reporte narrativo para acreditación (ejemplo)")
+    st.info(
+        "Este informe es un **ejemplo con datos ficticios**. En el sistema real, un agente de IA redacta el texto a partir de indicadores "
+        "calculados por el código, y el sistema verifica cada cifra. Aquí el texto lo arma una plantilla, para que veas el resultado al instante."
+    )
+    with st.spinner("Preparando el informe de ejemplo…"):
+        reporte = informe_demo_cache()
+    mostrar_reporte(reporte)
+
+
+def prueba_como_egresado():
+    egresados, experiencia = datos_demo_cache()
+    st.markdown("### Imagina que eres egresado/a de Telecomunicaciones")
+    st.caption(
+        "Responde en 10 segundos y mira cómo está tu promoción. **No se guarda nada**: es una demostración."
+    )
+    c1, c2 = st.columns(2)
+    anio = c1.selectbox(
+        "¿En qué año te graduaste?",
+        sorted(egresados["cohorte"].unique(), reverse=True),
+        key="demo_anio",
+    )
+    c2.radio("¿Qué estás haciendo hoy?", list(OPCIONES_SITUACION), key="demo_situacion")
+    if st.button("Ver mi promoción en cifras", type="primary", key="demo_ver"):
+        st.session_state["demo_cifras"] = cifras_de_cohorte(
+            egresados, experiencia, anio, "sintetico"
+        )
+    c = st.session_state.get("demo_cifras")
+    if c:
+        mostrar_cohorte(c)
+        if c.get("suficiente"):
+            pendientes = (
+                f"De los {c['n']} egresados de tu promoción, {c['desconocidos']} todavía no tienen situación conocida. "
+                "Cada persona que responde completa un poco más la foto. "
+                if c["desconocidos"]
+                else ""
+            )
+            st.success(
+                "**Tu aporte cuenta.** "
+                + pendientes
+                + "En el sistema real, tu respuesta se guarda en tu perfil, con tu autorización, y solo la ve la Facultad."
+            )
+
+
+def vista_demo():
+    st.warning(
+        "**Modo demostración.** Todos los datos son ficticios y se generan en este momento: no hay nadie real detrás y no se guarda nada."
+    )
+    with st.sidebar:
+        st.caption("Modo demostración")
+        if st.button("Salir de la demostración", key="salir_demo"):
+            for k in ("modo_demo", "demo_cifras"):
+                st.session_state.pop(k, None)
+            st.rerun()
+    tab_egresado, tab_facultad = st.tabs(
+        ["Pruébalo como egresado", "Lo que ve la Facultad"]
+    )
+    with tab_egresado:
+        prueba_como_egresado()
+    with tab_facultad:
+        vista_admin({}, demo=True)
+
+
+def vista_admin(auth, demo=False):
+    if demo:  # datos ficticios en memoria: no se toca la base de datos
+        egresados, experiencia = datos_demo_cache()
+        cargado_en = datetime.now(HORA_COLOMBIA)
+    else:
+        egresados, experiencia, cargado_en = cargar_datos(
+            auth["user_id"], auth["cliente"]
+        )
 
     with st.sidebar:
         st.header("Filtros")
-        fuente_sel = st.radio(
-            "Datos a mostrar", ["Todos", "Real", "Sintetico"], index=0
-        )
+        if demo:
+            fuente_sel = "Sintetico"
+            st.caption(
+                "Datos: ficticios (modo demostración). El periodo solo afecta a «Lo que ve la Facultad»."
+            )
+        else:
+            fuente_sel = st.radio(
+                "Datos a mostrar", ["Todos", "Real", "Sintetico"], index=0
+            )
         ventana_sel = st.radio(
-            "Periodo", ["Histórico completo", "Últimos 5 años (2021-2025)"], index=1
+            "Periodo",
+            ["Histórico completo", "Últimos 5 años (2021-2025)"],
+            index=0 if demo else 1,
         )
-        st.caption(f"Última actualización: {cargado_en.strftime('%d/%m/%Y %H:%M')}")
-        # on_click se ejecuta ANTES de que la página se vuelva a dibujar: al hacer clic ya se cargan datos nuevos
-        st.button(
-            "🔄 Actualizar datos",
-            on_click=cargar_datos.clear,
-            help="Los datos se guardan 5 minutos. Úsalo para ver de inmediato lo que acaban de registrar.",
-        )
+        if not demo:
+            st.caption(f"Última actualización: {cargado_en.strftime('%d/%m/%Y %H:%M')}")
+            # on_click se ejecuta ANTES de que la página se vuelva a dibujar: al hacer clic ya se cargan datos nuevos
+            st.button(
+                "Actualizar datos",
+                on_click=cargar_datos.clear,
+                help="Los datos se guardan 5 minutos. Úsalo para ver de inmediato lo que acaban de registrar.",
+            )
 
     egresados_f = aplicar_filtros(egresados, fuente_sel, ventana_sel)
     # solo la experiencia vigente (sin fecha de fin): la que cerró un egresado al cambiar de situación no cuenta como actual
@@ -378,14 +690,28 @@ def vista_admin(auth):
     experiencia_f = vigentes[vigentes["egresado_id"].isin(egresados_f["id"])]
     n_por_revisar = int((egresados["por_revisar"] == True).sum())  # noqa: E712
 
-    tab_indicadores, tab_directorio, tab_reporte, tab_revisar = st.tabs(
-        [
-            "📊 Indicadores",
-            "🔎 Directorio de egresados",
-            "📝 Reporte de acreditación",
-            f"🧾 Por revisar ({n_por_revisar})",
-        ]
-    )
+    if demo:  # sin «Por revisar»: eso necesita la base de datos
+        tab_indicadores, tab_directorio, tab_reporte, tab_privacidad = st.tabs(
+            [
+                "Indicadores",
+                "Directorio de egresados",
+                "Reporte de acreditación (ejemplo)",
+                "Privacidad",
+            ]
+        )
+        tab_revisar = None
+    else:
+        tab_indicadores, tab_directorio, tab_reporte, tab_revisar, tab_privacidad = (
+            st.tabs(
+                [
+                    "Indicadores",
+                    "Directorio de egresados",
+                    "Reporte de acreditación",
+                    f"Por revisar ({n_por_revisar})",
+                    "Privacidad",
+                ]
+            )
+        )
 
     with tab_indicadores:
         total = len(egresados_f)
@@ -412,7 +738,7 @@ def vista_admin(auth):
             (egresados_f["situacion_origen"] == "declarada_por_egresado").sum()
         )
         st.caption(
-            f"✍️ Situación declarada por el propio egresado desde el portal (con fecha): {declaradas} de {total}."
+            f"Situación declarada por el propio egresado desde el portal (con fecha): {declaradas} de {total}."
         )
 
         st.write("")
@@ -549,7 +875,7 @@ def vista_admin(auth):
             if nota:
                 st.caption(nota)
         with col_d:
-            st.subheader("📍 Ubicación de egresados")
+            st.subheader("Ubicación de egresados")
             ciudad = distribucion_ciudad(egresados_f)
             if not ciudad.empty:
                 fig = px.bar(
@@ -590,10 +916,17 @@ def vista_admin(auth):
         )
 
     with tab_reporte:
-        pestana_reporte()
+        if demo:
+            pestana_reporte_demo()
+        else:
+            pestana_reporte()
 
-    with tab_revisar:
-        pestana_por_revisar(auth, egresados, vigentes)
+    if tab_revisar is not None:
+        with tab_revisar:
+            pestana_por_revisar(auth, egresados, vigentes)
+
+    with tab_privacidad:
+        st.markdown(aviso_markdown())
 
 
 # ---------------------------------------------------------------------------
@@ -762,12 +1095,18 @@ def formulario_codigo(prefijo: str):
 
 
 def pantalla_acceso(aviso: str = ""):
-    _, centro, _ = st.columns([1, 1.4, 1])
+    _, centro, _ = st.columns([1, 1.9, 1])
     with centro:
         if aviso:
             st.warning(aviso)
-        tab_in, tab_nueva, tab_codigo = st.tabs(
-            ["Iniciar sesión", "Crear cuenta", "Confirmar correo"]
+        st.markdown("**¿Solo estás de visita?** No necesitas cuenta.")
+        if st.button(
+            "Explorar SIGMA con datos ficticios", type="primary", key="entrar_demo"
+        ):
+            st.session_state["modo_demo"] = True
+            st.rerun()
+        tab_in, tab_nueva, tab_codigo, tab_priv = st.tabs(
+            ["Iniciar sesión", "Crear cuenta", "Confirmar correo", "Privacidad"]
         )
         with tab_in:
             st.caption(
@@ -807,28 +1146,22 @@ def pantalla_acceso(aviso: str = ""):
                 "¿Se perdió o venció? Pide uno nuevo con «Reenviar código»."
             )
             formulario_codigo("tab")
+        with tab_priv:
+            st.markdown(aviso_markdown())
 
 
 # ---------------------------------------------------------------------------
 # Portal del egresado ("Mi perfil") y revisión de perfiles nuevos
 # ---------------------------------------------------------------------------
 CONSENTIMIENTO_RESUMEN = (
-    "Autorizo a la Facultad de Ingeniería de Telecomunicaciones de la Universidad Santo Tomás a tratar los datos que "
-    "registro aquí para el seguimiento a egresados y los procesos de acreditación."
+    "Autorizo a la Facultad de Ingeniería de Telecomunicaciones de la Universidad Santo Tomás el tratamiento de mis datos "
+    "personales, de acuerdo con el aviso de privacidad de la Facultad."
 )
-CONSENTIMIENTO_TEXTO = """
-**⚠️ BORRADOR: este texto debe reemplazarse por el texto oficial de la Universidad Santo Tomás
-(Política de Tratamiento de Datos Personales y formato de autorización, Ley 1581 de 2012).**
-
-- **Qué datos:** situación laboral, empresa, cargo, ciudad y país de residencia y, si los diligencias, sector, área de
-  desempeño y tecnologías.
-- **Para qué:** conocer la trayectoria de los egresados, calcular indicadores de empleabilidad y apoyar los procesos de
-  acreditación de la Facultad.
-- **Cómo se usan:** los informes y gráficos presentan datos agregados. Tu información individual solo la ve el personal
-  autorizado de la Facultad.
-- **Tus derechos:** puedes conocer, actualizar, rectificar o solicitar la supresión de tus datos, y revocar esta
-  autorización, escribiendo a la administración del programa.
-"""
+# el texto de la autorización es el que entregó la Facultad, sin cambios; el detalle técnico está en «Privacidad y mis datos»
+CONSENTIMIENTO_TEXTO = (
+    TEXTO_AUTORIZACION
+    + "\n\n*El detalle de cómo funciona SIGMA con tus datos (qué se guarda, con quién se comparte y cómo ejercer tus derechos) está en «Privacidad y mis datos», más abajo.*"
+)
 OPCIONES_SITUACION = {
     "Estoy empleado/a (o trabajo de forma independiente)": "empleado",
     "Estoy buscando empleo": "desempleado",
@@ -951,7 +1284,7 @@ def seccion_cv(auth, perfil):
     ronda = st.session_state.get("cv_ronda", 0)
     sug = st.session_state.get("sugerencia_cv")
     with st.expander(
-        "📄 ¿Tienes tu CV en PDF? Deja que el sistema te proponga los datos",
+        "¿Tienes tu CV en PDF? Deja que el sistema te proponga los datos",
         expanded=bool(sug),
     ):
         st.caption(
@@ -1205,20 +1538,75 @@ def formulario_perfil(auth):
                 st.error(mensaje_error_sigma(e))
             else:
                 cargar_datos.clear()  # que el dashboard de la administración vea el cambio
-                for k in ("sugerencia_cv", "informe_cv", "texto_enviado_cv"):
+                for k in (
+                    "sugerencia_cv",
+                    "informe_cv",
+                    "texto_enviado_cv",
+                    "mis_datos",
+                ):
                     st.session_state.pop(k, None)
                 st.session_state["cv_ronda"] = st.session_state.get("cv_ronda", 0) + 1
+                st.session_state.pop("cohorte_cifras", None)
+                st.session_state["mostrar_cohorte"] = (
+                    True  # a cambio de su respuesta, se le muestra cómo está su promoción
+                )
                 st.session_state["aviso_guardado"] = (
                     "¡Gracias! Tu información quedó guardada."
                 )
                 st.rerun()
+    return perfil
+
+
+def seccion_privacidad(auth, con_descarga=True):
+    """Aviso de privacidad y, si ya hay un perfil, la copia de los datos de la persona (su derecho de acceso)."""
+    with st.expander("Privacidad y mis datos"):
+        if con_descarga:
+            st.markdown(
+                "**Tus datos, siempre contigo.** Puedes pedir una copia de todo lo que SIGMA guarda sobre ti."
+            )
+            if st.button("Preparar mi copia", key="preparar_mis_datos"):
+                try:
+                    cli = auth["cliente"]
+                    perfil = (
+                        cli.table("egresados")
+                        .select("*")
+                        .eq("id", auth["egresado_id"])
+                        .execute()
+                        .data
+                    )
+                    experiencias = (
+                        cli.table("experiencia_laboral")
+                        .select("*")
+                        .eq("egresado_id", auth["egresado_id"])
+                        .execute()
+                        .data
+                    )
+                    st.session_state["mis_datos"] = mis_datos_json(
+                        auth["email"],
+                        perfil[0] if perfil else {},
+                        experiencias,
+                        datetime.now(HORA_COLOMBIA),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    st.error(mensaje_error_sigma(e))
+            if st.session_state.get("mis_datos"):
+                st.download_button(
+                    "Descargar mis datos (JSON)",
+                    data=st.session_state["mis_datos"],
+                    file_name="mis_datos_sigma.json",
+                    mime="application/json",
+                    key="descargar_mis_datos",
+                )
+            st.divider()
+        st.markdown(aviso_markdown())
 
 
 def vista_egresado(auth):
-    st.subheader("👋 Mi perfil")
+    st.subheader("Mi perfil")
     if not auth.get("egresado_id"):
         if auth.get("vinculo") == "sin_coincidencia":
             formulario_crear_perfil(auth)
+            seccion_privacidad(auth, con_descarga=False)
             return
         try:
             res = llamar_funcion(auth, "vincular_mi_registro") or {}
@@ -1238,8 +1626,14 @@ def vista_egresado(auth):
         else:
             auth["vinculo"] = "sin_coincidencia"
             formulario_crear_perfil(auth)
+            seccion_privacidad(auth, con_descarga=False)
             return
-    formulario_perfil(auth)
+    perfil = formulario_perfil(auth)
+    if perfil:  # si el perfil no cargó, ya se avisó arriba y no se ofrece la cohorte
+        seccion_cohorte(
+            auth, declarada=perfil.get("situacion_origen") == "declarada_por_egresado"
+        )
+    seccion_privacidad(auth)
 
 
 def _tokens_nombre(nombre) -> set:
@@ -1318,7 +1712,7 @@ def pestana_por_revisar(auth, egresados, vigentes):
     similares = posibles_duplicados(fila["nombre"], egresados, elegido)
     if similares:
         st.warning(
-            "⚠️ Posibles duplicados: "
+            "Posibles duplicados: "
             + "; ".join(
                 f"{n} (cohorte {c}{', también por revisar' if r else ''})"
                 for _, n, c, r in similares
@@ -1356,11 +1750,13 @@ def pestana_por_revisar(auth, egresados, vigentes):
 
 
 def main():
-    st.title("📡 SIGMA — Observatorio de Trayectoria y Empleabilidad")
-    st.caption("Facultad de Ingeniería de Telecomunicaciones · Universidad Santo Tomás")
+    st.markdown(CABECERA, unsafe_allow_html=True)
 
     auth = st.session_state.get("auth")
     if not auth:
+        if st.session_state.get("modo_demo"):
+            vista_demo()
+            return
         pantalla_acceso()
         return
     if not sesion_vigente(auth):
@@ -1370,7 +1766,7 @@ def main():
 
     with st.sidebar:
         st.caption(
-            f"👤 {auth['email']} · {'Administración' if auth['rol'] == 'admin' else 'Egresado'}"
+            f"{auth['email']} · {'Administración' if auth['rol'] == 'admin' else 'Egresado'}"
         )
         if st.button("Cerrar sesión"):
             cerrar_sesion()

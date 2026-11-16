@@ -52,6 +52,7 @@ FUNCIONES_PROTEGIDAS = [
     ("marcar_revisado", {"p_egresado_id": "00000000-0000-0000-0000-000000000000"}),
     ("descartar_perfil", {"p_egresado_id": "00000000-0000-0000-0000-000000000000"}),
     ("registrar_uso_cv", {}),
+    ("mi_cohorte_en_cifras", {}),
 ]
 
 

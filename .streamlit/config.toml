@@ -1,0 +1,32 @@
+# Tema visual de SIGMA. Fondo marfil, azul institucional y dorado. Los títulos van en Fraunces y el texto en Public Sans: esas dos tipografías
+# se incrustan desde la carpeta fuentes/ (ver app.py), y las de Streamlit de abajo (serif y sans) quedan solo como respaldo.
+# Sin íconos: la jerarquía la llevan la tipografía, el tamaño y el espacio.
+# Los colores coinciden con los del informe en PDF (NAVY y GOLD) y con las constantes NAVY y GOLD de app.py.
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#0B2A5E"
+backgroundColor = "#F4EEDD"
+secondaryBackgroundColor = "#FFFDF7"
+textColor = "#14223F"
+linkColor = "#0B2A5E"
+borderColor = "#DCD1B2"
+showWidgetBorder = true
+baseRadius = "4px"
+buttonRadius = "4px"
+font = "sans serif"
+headingFont = "serif"
+headingFontSizes = ["2.6rem", "2rem", "1.6rem", "1.3rem", "1.1rem", "1rem"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+chartCategoricalColors = ["#0B2A5E", "#C9A227", "#5B7FB9", "#E3C567", "#2F4C7E", "#8C9BB5"]
+
+[theme.sidebar]
+backgroundColor = "#0B2A5E"
+secondaryBackgroundColor = "#123A7A"
+textColor = "#F1F4FA"
+primaryColor = "#C9A227"
+linkColor = "#E3C567"
+borderColor = "#2F4C7E"

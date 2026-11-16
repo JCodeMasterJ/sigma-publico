@@ -6,14 +6,16 @@ Local:  uvicorn main:app --reload
 import hmac
 import os
 import tempfile
+from datetime import datetime
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from supabase import create_client
 from dotenv import load_dotenv
 
-from agente_reportes import SinDatosError, generar_reporte
+from agente_reportes import SinDatosError, generar_reporte, indicadores_desde_base
+from exportar import indicadores_a_csv
 from proveedor_ia import extraer_datos_cv, sugerir_perfil_desde_texto
 
 load_dotenv()
@@ -156,3 +158,42 @@ def sugerir_perfil(payload: SugerirPerfilRequest):
             status_code=502,
             detail="El servicio de IA no pudo analizar el texto en este momento.",
         ) from e
+
+
+@app.get("/api/indicadores", dependencies=[Depends(verificar_api_key)])
+def indicadores_endpoint(
+    fuente: Literal["real", "sintetico", "todos"] = "real",
+    ventana: Literal["5_anios", "historico"] = "5_anios",
+    formato: Literal["json", "csv"] = "json",
+):
+    """
+    Punto de acceso de LECTURA para otras aplicaciones (Excel, Power BI, sistemas de la universidad...).
+    Entrega indicadores AGRUPADOS, calculados por el sistema, sin datos de personas. No usa IA ni gasta cuota.
+    Requiere el encabezado x-api-key.
+    """
+    try:
+        ind = indicadores_desde_base(supabase, fuente, ventana)
+    except SinDatosError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudieron calcular los indicadores en este momento.",
+        ) from e
+    if formato == "csv":
+        cuerpo = indicadores_a_csv(
+            ind,
+            {
+                "fuente": fuente,
+                "periodo": ventana,
+                "generado_en": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        return Response(
+            content=cuerpo,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="indicadores_sigma.csv"'
+            },
+        )
+    return {"status": "ok", "fuente": fuente, "ventana": ventana, "indicadores": ind}

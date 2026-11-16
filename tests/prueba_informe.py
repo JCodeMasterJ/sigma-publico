@@ -1,4 +1,4 @@
-"""Pruebas del informe: indicadores de ciudades, topes de texto, gráficos de la app y gráficos del PDF."""
+"""Pruebas del informe: indicadores de ciudades, topes de texto, gráficos del PDF y la pestaña de reportes (resumen en la página)."""
 
 import io, os, random, sys
 from pathlib import Path
@@ -16,7 +16,6 @@ os.environ.update(
 )
 
 import agente_reportes as ar
-import graficos_reporte as gr
 from informe_pdf import generar_pdf
 from pypdf import PdfReader
 
@@ -116,9 +115,13 @@ for ciudad, n in CIUDADES + [(None, 120)]:
 
 class Q:
     def __init__(s, t):
-        s.t, s._r = t, (0, 10**9)
+        s.t, s._r, s._cuenta = t, (0, 10**9), False
 
-    def select(s, c):
+    def select(s, c, count=None):
+        s._cuenta = count == "exact"
+        return s
+
+    def order(s, *a, **k):
         return s
 
     def range(s, a, b):
@@ -132,7 +135,9 @@ class Q:
         d = {"egresados": egr, "experiencia_laboral": exp, "programas": [{"id": "p1"}]}[
             s.t
         ]
-        return SimpleNamespace(data=d[s._r[0] : s._r[1] + 1])
+        return SimpleNamespace(
+            data=d[s._r[0] : s._r[1] + 1], count=len(d) if s._cuenta else None
+        )
 
 
 class SB:
@@ -195,53 +200,6 @@ chequear(
     "A5. el prompt le pide ser breve y no enumerar lo que ya está en los gráficos",
     "NO las enumeres" in ar.construir_prompt(ind)
     and "máximo 4 limitaciones" in ar.construir_prompt(ind),
-)
-
-# ===== B. los gráficos de la app =====
-figs = gr.figuras_del_reporte(ind)
-claves = [f["clave"] for f in figs]
-chequear(
-    "B1. salen los 5 gráficos: cohortes, ciudades, sectores, áreas y tecnologías",
-    claves == ["cohortes", "ciudades", "sectores", "areas", "tecnologias"],
-    claves,
-)
-chequear(
-    "B2. el de cohortes va a todo el ancho y los otros cuatro de a dos",
-    [f["ancho"] for f in figs] == ["completo", "medio", "medio", "medio", "medio"],
-)
-barras = {
-    f["clave"]: len(f["figura"].data[0].x) for f in figs if f["clave"] != "cohortes"
-}
-chequear(
-    "B3. ciudades y tecnologías muestran hasta 10 barras; sectores y áreas, hasta 5",
-    barras["ciudades"] == 10
-    and barras["tecnologias"] <= 10
-    and barras["sectores"] <= 5
-    and barras["areas"] <= 5,
-    barras,
-)
-chequear(
-    "B4. el gráfico de ciudades pone primero la más grande (Bucaramanga, 61)",
-    figs[1]["figura"].data[0].y[-1] == "Bucaramanga"
-    and figs[1]["figura"].data[0].x[-1] == 61,
-)
-chequear(
-    "B5. CADA gráfico dice cuántos datos hay detrás: 'Ciudad registrada en 176 de 296 egresados (59 %)'",
-    "176 de 296 egresados (59 %)" in figs[1]["pie"],
-    figs[1]["pie"],
-)
-chequear(
-    "B6. y avisa lo inferido por IA en sector y área",
-    all(
-        "inferidas por IA" in f["pie"]
-        for f in figs
-        if f["clave"] in ("sectores", "areas")
-    ),
-)
-chequear(
-    "B7. con indicadores vacíos no revienta: devuelve una lista vacía",
-    gr.figuras_del_reporte({}) == []
-    and gr.figuras_del_reporte({"ubicacion_top": {"ciudades": {}}}) == [],
 )
 
 # ===== C. el PDF =====
@@ -323,26 +281,29 @@ chequear(
     len(lector.pages),
 )
 
-# ===== D. la pestaña de reportes en la app =====
+# ===== P. la pestaña de reportes: la página da el RESUMEN; el informe completo, con gráficos, está en el PDF =====
+import json
 import requests as _requests
 import streamlit as _st
 from streamlit.testing.v1 import AppTest
-import json
 
 reporte_json = json.loads(json.dumps(rep, default=str))
-LLAMADAS = []
+ESC = {"codigo": 200, "texto": "", "json": reporte_json, "error": None}
 
 
 class _Resp:
-    status_code = 200
-    text = ""
+    def __init__(s):
+        s.status_code, s.text = ESC["codigo"], ESC["texto"]
 
-    def json(self):
-        return reporte_json
+    def json(s):
+        if ESC["json"] is None:
+            raise ValueError("no es JSON")
+        return ESC["json"]
 
 
 def _post(url, json=None, headers=None, timeout=None):
-    LLAMADAS.append((url, json))
+    if ESC["error"]:
+        raise ESC["error"]
     return _Resp()
 
 
@@ -368,8 +329,11 @@ class Consulta:
     def range(s, *a, **k):
         return s
 
+    def order(s, *a, **k):
+        return s
+
     def execute(s):
-        return SimpleNamespace(data=s.d)
+        return SimpleNamespace(data=s.d, count=len(s.d))
 
 
 class Cliente:
@@ -394,7 +358,17 @@ class Cliente:
         )
 
 
-def abrir_admin():
+def escenario(codigo=200, texto="", json_=reporte_json, error=None, verificacion=None):
+    ESC.update(codigo=codigo, texto=texto, json=json_, error=error)
+    reporte_json["verificacion"] = verificacion or {
+        "citas_invalidas": [],
+        "hallazgos_sin_cita": [],
+        "cifras_sin_respaldo": [],
+    }
+
+
+def generar(**kw):
+    escenario(**kw)
     at = AppTest.from_file(str(RAIZ / "app.py"), default_timeout=60)
     at.session_state["auth"] = {
         "cliente": Cliente(),
@@ -404,65 +378,171 @@ def abrir_admin():
         "egresado_id": None,
     }
     at.run()
-    return at
+    antes = len(at.get("plotly_chart"))
+    [b for b in at.button if b.label == "Generar reporte"][0].click()
+    at.run()
+    return at, antes
 
 
-at = abrir_admin()
-chequear(
-    "D0. el panel de administración carga sin errores",
-    not at.exception,
-    [e.value for e in at.exception][:1],
-)
-antes = len(at.get("plotly_chart"))
-[b for b in at.button if b.label == "Generar reporte"][0].click()
-at.run()
-despues = len(at.get("plotly_chart"))
-chequear(
-    "D1. al generar el reporte aparecen los 5 gráficos nuevos en la pestaña",
-    despues - antes == 5 and not at.exception,
-    (antes, despues),
-)
-md = " ".join(m.value for m in at.markdown)
-chequear(
-    "D2. con el título 'Panorama en gráficos', antes del texto",
-    "Panorama en gráficos" in md,
-)
-chequear(
-    "D3. el texto del informe va dentro de un panel 'Informe redactado…', abierto por defecto, y se sigue viendo",
-    any("Informe redactado" in e.label for e in at.expander)
-    and "HALLAZGO-RESUMEN" in md,
-)
-chequear(
-    "D4. cada gráfico muestra su nota de cobertura",
-    any("176 de 296 egresados" in c.value for c in at.caption),
-)
-botones_pdf = [b.proto.label for b in at.get("download_button")]
-chequear(
-    "D5. sigue la verificación automática (en verde) y el botón para descargar el PDF",
-    any("Verificación automática" in s.value for s in at.success)
-    and any("PDF" in l for l in botones_pdf),
-    botones_pdf,
-)
-# si los gráficos fallan, el informe escrito NUNCA se esconde
-gr_original = gr.figuras_del_reporte
+def visibles_y_ocultos(at):
+    todos = [m.value for m in at.markdown]
+    dentro = [m.value for e in at.expander for m in e.markdown]
+    for v in dentro:
+        if v in todos:
+            todos.remove(v)
+    return todos, dentro
 
 
-def _rota(ind):
-    raise RuntimeError("fallo simulado")
+def todo_el_texto(at):
+    return " ".join(
+        str(x.value)
+        for x in list(at.markdown)
+        + list(at.caption)
+        + list(at.info)
+        + list(at.warning)
+        + list(at.error)
+        + list(at.success)
+    )
 
 
-gr.figuras_del_reporte = _rota
-at2 = abrir_admin()
-[b for b in at2.button if b.label == "Generar reporte"][0].click()
-at2.run()
-md2 = " ".join(m.value for m in at2.markdown)
+at0 = AppTest.from_file(str(RAIZ / "app.py"), default_timeout=60)
+at0.session_state["auth"] = {
+    "cliente": Cliente(),
+    "user_id": "u-admin",
+    "email": "admin@ejemplo.com",
+    "rol": "admin",
+    "egresado_id": None,
+}
+at0.run()
 chequear(
-    "D6. si los gráficos fallan: aviso corto, SIN excepción, y el informe escrito sigue visible",
-    not at2.exception
-    and any("No se pudieron dibujar los gráficos" in c.value for c in at2.caption)
-    and "HALLAZGO-RESUMEN" in md2,
+    "P0. el panel de administración carga sin errores",
+    not at0.exception,
+    [e.value for e in at0.exception][:1],
 )
-gr.figuras_del_reporte = gr_original
+
+at, antes = generar()
+visibles, ocultos = visibles_y_ocultos(at)
+chequear(
+    "P1. la página NO dibuja gráficos del informe: no aparece ninguno nuevo al generarlo",
+    len(at.get("plotly_chart")) == antes
+    and "Panorama en gráficos" not in todo_el_texto(at),
+    (antes, len(at.get("plotly_chart"))),
+)
+chequear(
+    "P2. sí muestra el resumen ejecutivo",
+    any("HALLAZGO-RESUMEN" in v for v in visibles),
+    visibles[-3:],
+)
+eg = ind["empleabilidad_general"]
+valores = {m.label: m.value for m in at.metric}
+esperado = {
+    "Egresados analizados": f"{ind['totales']['egresados']:,}".replace(",", "."),
+    "Empleo sobre el total": f"{eg['tasa_sobre_total']:.1f} %".replace(".", ","),
+    "Empleo sobre conocidos": f"{eg['tasa_sobre_conocidos']:.1f} %".replace(".", ","),
+    "Situación desconocida": f"{eg['porcentaje_situacion_desconocida']:.1f} %".replace(
+        ".", ","
+    ),
+}
+chequear(
+    "P3. muestra 4 cifras clave: egresados, empleo sobre el total y sobre conocidos (siempre juntas), y el % desconocido",
+    valores == esperado,
+    valores,
+)
+botones = [b.proto.label for b in at.get("download_button")]
+chequear(
+    "P4. avisa que el informe completo con gráficos está en el PDF, y el botón de descarga es visible",
+    any(
+        "informe completo" in i.value and "PDF" in i.value and "gráficos" in i.value
+        for i in at.info
+    )
+    and any("PDF" in l for l in botones),
+    botones,
+)
+exp_texto = [e for e in at.expander if "texto completo del informe" in e.label]
+chequear(
+    "P5. los hallazgos, limitaciones y recomendaciones NO están a la vista: solo dentro de un panel cerrado",
+    exp_texto
+    and exp_texto[0].proto.expanded is False
+    and any("HALLAZGO-3" in v for v in ocultos)
+    and not any("HALLAZGO-3" in v for v in visibles),
+    exp_texto[0].proto.expanded if exp_texto else None,
+)
+chequear(
+    "P6. se mantiene la verificación automática (en verde)",
+    any("Verificación automática" in s.value for s in at.success),
+)
+
+at, _ = generar(
+    verificacion={
+        "citas_invalidas": [],
+        "hallazgos_sin_cita": [],
+        "cifras_sin_respaldo": ["99,9"],
+    }
+)
+chequear(
+    "P7. si la verificación encuentra una cifra sin respaldo, lo avisa en la página",
+    any("99,9" in w.value for w in at.warning)
+    and not any("Verificación automática: las cifras" in s.value for s in at.success),
+)
+
+import informe_pdf as _ipdf
+
+_gen_original = _ipdf.generar_pdf
+_ipdf.generar_pdf = lambda r: (_ for _ in ()).throw(
+    RuntimeError("fallo simulado del PDF")
+)
+at, _ = generar()
+v9, _o = visibles_y_ocultos(at)
+chequear(
+    "P8. si el PDF falla: aviso corto, SIN excepción, y el resumen sigue visible",
+    not at.exception
+    and any("No se pudo generar el PDF" in c.value for c in at.caption)
+    and any("HALLAZGO-RESUMEN" in v for v in v9),
+)
+_ipdf.generar_pdf = _gen_original
+
+html = "<!DOCTYPE html><html><head><title>502</title><style>@font-face{font-family:Roobert}</style></head><body>Bad gateway</body></html>"
+casos_ok = True
+for codigo in (502, 503, 504):
+    at, _ = generar(codigo=codigo, texto=html, json_=None)
+    t = todo_el_texto(at)
+    casos_ok = (
+        casos_ok
+        and any("despertando" in w.value for w in at.warning)
+        and "<!DOCTYPE" not in t
+        and "<html" not in t
+        and "Roobert" not in t
+        and not at.exception
+    )
+chequear(
+    "P9. si Render responde 502, 503 o 504 (despertando o desplegando): aviso amable, NUNCA la página web cruda",
+    casos_ok,
+)
+at, _ = generar(codigo=500, texto="<html><body>boom interno</body></html>", json_=None)
+chequear(
+    "P10. un error 500 muestra solo el código, sin volcar el cuerpo de la respuesta",
+    any("(500)" in e.value for e in at.error)
+    and "boom interno" not in todo_el_texto(at)
+    and "<html" not in todo_el_texto(at),
+)
+at, _ = generar(codigo=401, json_=None)
+chequear(
+    "P11. clave incorrecta (401): lo dice con claridad",
+    any("AGENTES_API_KEY" in e.value for e in at.error),
+)
+at, _ = generar(
+    codigo=400, json_={"detail": "No hay egresados que cumplan ese filtro."}
+)
+chequear(
+    "P12. filtro sin datos (400): muestra el motivo que da el servicio",
+    any("No hay egresados que cumplan ese filtro." in w.value for w in at.warning),
+)
+at, _ = generar(error=_requests.exceptions.ConnectionError("sin red"))
+chequear(
+    "P13. sin conexión con el servicio: aviso claro y sin excepción",
+    not at.exception and any("No se pudo conectar" in e.value for e in at.error),
+)
+escenario()
 
 print(f"\n{sum(resultados)}/{len(resultados)} pruebas correctas")
 sys.exit(0 if all(resultados) else 1)
